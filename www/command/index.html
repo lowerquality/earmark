@@ -1,0 +1,526 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <script src="minidb.js"></script>
+    <script src="earmark.js"></script>
+    <script src="act.js"></script>
+    <script src="attachments.js"></script>            
+    <title>command-power-point</title>
+    <style>
+    body {
+        margin: 0;
+        padding: 0;
+        font-family: Helvetica, sans;
+        font-size: 10pt;
+    }
+
+#header {
+    height: 30px;
+    border-bottom: 3px solid black;
+    padding: 0 5px;
+}
+#earmark-logo {
+    font-size: 16pt;
+    text-transform: uppercase;
+    color: black;
+    text-decoration: none;
+}
+#earmark-logo:hover {
+    text-decoration: underline;
+}
+
+#cmdlist {
+    height: calc(100vh - 40px);
+    overflow-y: auto;
+}
+
+#sessions {
+    float: left;
+    width: calc(100vw - 200px);
+    border-right: 1px solid black;
+    height: calc(100vh - 40px);
+    overflow-y: auto;
+}
+.session {
+    border: 1px solid black;
+    border-radius: 10px;
+    margin: 5px;
+}
+.session.active {
+    border: 2px solid red;
+}
+.session .date {
+    border-bottom: 1px solid black;
+    text-align: right;
+    font-size: 8pt;
+    background-color: black;
+    border-radius: 10px 10px 0 0;
+    color: white;
+    padding-right: 10px;
+}
+.oneutt {
+    border-bottom: 1px dotted #ddd;
+    padding: 3px 5px;
+}
+    .oneutt span {
+        margin-right: 5px;
+    }
+
+    .inprogress {
+        color: #ccc;
+        font-style: italic;
+    }
+    .command {
+        font-family: Courier, mono;
+    }
+    .command.negative {
+        color: red;
+    }
+
+    .cmdhits {
+        font-size: 8pt;
+        font-family: Helvetica, sans;
+    }
+    .hit {
+        background-color: yellow;
+        color: black;
+    }
+    .word:hover {
+        text-decoration: underline;
+    }
+    </style>
+  </head>
+  <body>
+    <script>
+
+var pagename = window.location.pathname.split('/')[1];
+
+var db = new M.Database();
+db.onload = main;
+
+if(!db.offline) {
+    var attach = new A.Attachments();
+}
+else {
+    var attach = {};
+}
+
+var $a = document.createElement("audio");
+
+var my_started = false;
+
+var p_root;
+
+function render() {
+    var root = new A.Root();
+
+    update_command_list();
+
+    render_header(root);
+
+    render_sessions(root);
+    render_commands(root);
+
+    root.update(p_root);
+    p_root = root;
+}
+
+function render_header(root) {
+    var head = new A.Elt("div", {
+        id: "header",
+        parent: root});
+
+    new A.Elt("a", {
+        id: "earmark-logo",
+        attrs: {
+            href: "/"
+        },
+        text: "Earmark",
+        parent: head});
+
+    new A.Elt("span", {
+        id: "sessionname",
+        parent: head,
+        text: "/" + pagename});
+
+    // upload
+    new A.Elt("input", {
+        id: "upload",
+        parent: head,
+        attrs: {
+            type: "file"
+        },
+        events: {
+            onchange: function() {
+                for(var i=0; i<this.files.length; i++) {
+                    attach.put_file(this.files[i], function(x) {
+                        console.log('done', x);
+                        render();
+                    }, function(p) {
+                        console.log('progress', p);
+                        render();
+                    });
+                }
+                render();
+            }}});
+    if(attach.cur_uploading) {
+        new A.Elt("progress", {
+            id: "uploadstatus",
+            parent: head,
+            attrs: {
+                max: "100",
+                value: "" + Math.floor((100*attach.cur_idx) / attach.cur_size)
+            },
+        });
+    }
+
+    // download
+    new A.Elt("a", {
+        id: "download",
+        text: "download",
+        parent: head,
+        attrs: {
+            href: "download.zip"
+        }});
+}
+
+var command_list = [];
+
+function update_command_list() {
+    command_list = db.items()
+        .filter(function(x) { return x.type == "command" && x._ks && x._ks.length > 0; })
+
+    command_list.sort(function(x, y) { return x.text > y.text ? 1 : -1; });
+}
+
+function render_commands(root) {
+    var commands = new A.Elt("ul", {
+        text: "List of commands",
+        id: "cmdlist",
+        parent: root});
+
+    command_list
+        .forEach(function(cmd) {
+            
+            var c = new A.Elt("li", {
+                id: cmd._id,
+                text: cmd.text,
+                parent: commands,
+                //attrs: {"title": cmd_ks},
+                classes: ["command", cmd.negative ? "negative" : "positive"] });
+
+            var c_list = new A.Elt("ul", {
+                id: cmd._id + "-hits",
+                classes: ["cmdhits"],
+                parent: c})
+
+            // XXX: expensive!
+            var cmd_hits = db.items()
+                .filter(function(x) { return x.type == 'utterance' && x.command_words && seq_find(x.command_words.map(function(x) { return x.word; }), cmd._ks) >= 0; })
+                .forEach(function(utt) {
+                    render_utt(utt, c_list);
+                });
+        });
+
+    var newcmd = new A.Elt("input", {
+        parent: commands,
+        id: "newcmd",
+        attrs: {
+            placeholder: "create a new command"},
+        events: {
+            onkeydown: function(ev) {
+                if(ev.keyCode == 13 && this.value) {
+                    db.updatedoc({type: "command",
+                                  text: this.value});
+                    // clear
+                    this.value = "";
+                }
+            }}});
+}
+
+function render_sessions(root) {
+    var sessions = new A.Elt("div", {
+        id: "sessions",
+        parent: root})
+
+    
+    if(my_started) {
+        new A.Elt("pre", {
+            text: "" + aconf.outgoing_idx + " / " + aconf.incoming_idx,
+            id: "stats",
+            parent: sessions
+        });
+        
+        new A.Elt("button", {
+            parent: sessions,
+            id: "startbutton",
+            text: "stop recording",
+            events: {
+                onclick: function() {
+                    my_started = false;
+                    
+                    aconf.stop();
+                    render();
+                }}});
+
+        if(aconf.session_id) {
+            new A.Elt("button", {
+                parent: sessions,
+                id: "audiocommand",
+                text: "hold to make audiocommand",
+                events: {
+                    onmousedown: function(ev) {
+
+                        var start_time = aconf.buf_idx_to_time(aconf.outgoing_idx);
+                        
+                        window.onmouseup = function(ev) {
+                            window.onmouseup = null;
+
+                            var end_time = aconf.buf_idx_to_time(aconf.outgoing_idx);
+                            if(end_time - start_time > 0.2 && end_time - start_time < 10) {
+
+                                console.log("new audio cmd", start_time, end_time);
+                                
+                                db.updatedoc({
+                                    type: "audio-command",
+                                    session: aconf.session_id,
+                                    start: start_time,
+                                    end: end_time
+                                });
+                            }
+                        }
+                    }}});
+        }
+    }
+    else {
+        new A.Elt("button", {
+            parent: sessions,
+            id: "startbutton",
+            text: "start recording",
+            events: {
+                onclick: function() {
+                    my_started = true;
+                    
+                    aconf.start();
+                    render();
+                }}});
+    }
+
+    var s_list = db.items()
+        .filter(function(x) { return x.type == "session"; });
+
+    // sort inverse-chronological
+    s_list.sort(function(x,y) { return x.s_time < y.s_time ? 1 : -1; })
+    
+    s_list
+        .forEach(function(sess_obj) {
+            var sess = new A.Elt("div", {
+                id: sess_obj._id,
+                classes: ['session', (my_started && sess_obj._id == aconf.session_id) ? 'active' : 'inactive'],
+                parent: sessions});
+
+            new A.Elt("div", {
+                text: new Date(sess_obj.s_time*1000),
+                id: sess_obj._id + "-date",
+                classes: ['date'],
+                parent: sess});
+            
+            // find this session's utterances
+            var utts = db.items()
+                .filter(function(x) { return x.type == "utterance" && x.session == sess_obj._id; });
+            utts.sort(function(x,y) { return x['utt-idx'] > y['utt-idx'] ? 1 : -1; });
+
+            utts
+                .forEach(function(utt_obj) {
+
+                    render_utt(utt_obj, sess);
+                })
+            
+        });
+}
+
+function render_utt(utt_obj, utt_root) {
+
+    var utt$ = new A.Elt("div", {
+        parent: utt_root,
+        id: utt_obj._id,
+        classes: ["oneutt"]
+    });
+
+    if(utt_obj.transcript_words && utt_obj.command_words) {
+        // Fully aligned utterance: merge view.
+
+        var hits = seq_find_commands(utt_obj.command_words.map(function(x){return x.word; }), command_list);
+
+        var render_from_transcript = function(st_t, end_t) {
+            var words = utt_obj.transcript_words
+                .filter(function(wd) {
+                    return wd.start >= st_t && (!end_t || (wd.start+wd.duration) <= end_t);
+                })
+                .map(function(x) { return x.word; })
+                .join(" ");
+            new A.Elt("span", {
+                id: utt_obj._id + "-words-" + st_t,
+                text: words,
+                parent: utt$});
+        }
+
+        var cur_idx = 0;
+        var cur_t = 0;
+
+        hits.forEach(function(h) {
+            if(h.st_idx > cur_idx) {
+                render_from_transcript(cur_t, utt_obj.command_words[h.st_idx].start);
+            }
+            // Render command
+            new A.Elt("span", {
+                parent: utt$,
+                id: utt_obj._id + "-command-" + h.st_idx,
+                classes: ["command", (h.command.negative ? "negative" : "hit")],
+                events: {
+                    onclick: function() {
+                        // play
+                        $a.src = "attachments/" + utt_obj.wavpath + "#t=" + utt_obj.command_words[h.st_idx].start;
+                        $a.play();
+                    },
+                    ondblclick: function() {
+                        var st_t = utt_obj.command_words[h.st_idx].start;
+                        var end_obj = utt_obj.command_words[h.st_idx + h.command._ks.length - 1];
+                        var end_t = end_obj.start + end_obj.duration;
+
+                        console.log("making new negative", st_t, end_t, utt_obj.session);
+                        
+                        db.updatedoc({
+                            type: "audio-command",
+                            negative: true,
+                            misheard_command: h.command._id,
+                            start: utt_obj.start + st_t,
+                            end: utt_obj.start + end_t,
+                            session: utt_obj.session
+                        })
+                    },
+                },
+                text: h.command.text
+            });
+
+            cur_idx = h.st_idx + h.command._ks.length;
+            cur_t = utt_obj.command_words[cur_idx-1].start + utt_obj.command_words[cur_idx-1].duration;
+        });
+
+        // Render end of full transcription
+        render_from_transcript(cur_t);
+        
+    }
+    else {
+        new A.Elt("div", {
+            parent: utt$,
+            id: utt_obj._id + "-preview",
+            classes: ["preview", "inprogress"],
+            text: utt_obj.transcript})
+
+        var command_seqs = command_list
+            .filter(function(x) { return !x.negative; })
+            .map(function(x) { return x._ks; })
+            .filter(function(x) { return x;});
+
+        var command_trans_seq = utt_obj.command.split(" ");
+
+        var command_elt = new A.Elt("div", {
+            parent: utt$,
+            id: utt_obj._id + "-cmd",
+            classes: ["command", "inprogress"]});
+
+        var i=0;
+        while(i<command_trans_seq.length) {
+            var hit_idx = -1;
+            command_seqs.forEach(function(c_seq, c_idx) {
+                var miss = false;
+                c_seq.forEach(function(c_wd, c_seq_idx) {
+                    if(i+c_seq_idx >= command_trans_seq.length || command_trans_seq[i+c_seq_idx] != c_wd) {
+                        miss=true;
+                    }
+                })
+                if(!miss) {
+                    hit_idx = c_idx;
+                }
+            });
+            
+            if(hit_idx >= 0) {
+                new A.Elt("span", {
+                    id: utt_obj._id + "-command-" + i,
+                    parent: command_elt,
+                    classes: ["hit"],
+                    text: command_seqs[hit_idx].join(" ") + " "
+                });
+                i += command_seqs[hit_idx].length;
+            }
+            else {
+                new A.Elt("span", {
+                    id: utt_obj._id + "-command-" + i,
+                    parent: command_elt,
+                    text: command_trans_seq[i] + " "
+                });
+                i += 1;
+            }
+        }
+    };
+}
+
+db.onupdate = render;
+
+var proto = window.location.protocol;
+var wsproto = 'ws://';
+if(proto[proto.length-2] == 's') {
+    wsproto = 'wss://';
+}
+var wsurl = wsproto + window.location.host + window.location.pathname + "_ws";
+
+var aconf = new Earmark(wsurl);
+
+function main() {
+    render();
+}
+
+function seq_find(seq, subseq, seq_st_idx) {
+    for(var i=(seq_st_idx||0); i<seq.length; i++) {
+        var hit = true;
+        for(var j=0; j<subseq.length; j++) {
+            if(seq[i+j] != subseq[j]) {
+                hit=false;
+                break;
+            }
+        }
+        if(hit) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+function seq_find_commands(seq, commands, st_idx, out) {
+    out = out || [];
+    st_idx = st_idx || 0;
+
+    var hits = commands
+    // Compute all subsequence matches
+        .map(function(x,idx) { return [x, seq_find(seq, x._ks)]; })
+    // Filter to hits
+        .filter(function(x) { return x[1] >= st_idx; })
+
+    hits.sort(function(x,y) { return x[1] > y[1] ? 1 : -1; });
+
+    if(hits.length > 0) {
+        out.push({
+            st_idx: hits[0][1],
+            command: hits[0][0]
+        });
+        return seq_find_commands(seq, commands, hits[0][1]+hits[0][0]._ks.length, out);
+    }
+
+    return out;
+}
+
+    </script>
+  </body>
+</html>
+
